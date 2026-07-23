@@ -948,6 +948,11 @@ function restore(s){
 /* ================= 河読み・点数状況 ================= */
 // 河読み: 捨て牌の偏りから染め手・国士無双を察知（捨て牌は手牌の裏返し）
 function readRiver(q){
+  // 么九牌のみの2副露 → 清老頭・字一色模様（么九牌を絶対に切らない）
+  const openMelds = q.melds.filter(m => m.type !== "chi" && m.type !== "ankan");
+  if (openMelds.length >= 2 && openMelds.every(m => YAOCHU.includes(m.t))){
+    return { type:"yaochu", level:3 };
+  }
   const disc = q.river.map(r => r.t);
   const n = disc.length;
   if (n < 5) return null;
@@ -983,6 +988,7 @@ function readDangerMul(read, t, visible){
   if (!read) return 1;
   if (read.type === "honitsu") return (t >= 27 || (t < 27 && Math.floor(t/9) === read.suit)) ? 2.2 : 0.45;
   if (read.type === "kokushi") return YAOCHU.includes(t) ? 2.5 : 0.25;
+  if (read.type === "yaochu") return YAOCHU.includes(t) ? 3 : 0.4; // 清老頭・字一色模様
   if (read.type === "toitoi"){ // シャンポン・単騎に生牌ほど当たりやすい
     const seen = visible ? visible[t] : 2;
     return seen <= 1 ? 1.45 : seen >= 3 ? 0.7 : 1.1;
@@ -1064,6 +1070,20 @@ function openTenpaiProb(q){
   if (m === 1) return Math.min(0.6, 0.05 + j * 0.03);
   if (m === 2) return Math.min(0.85, 0.25 + j * 0.04);
   return Math.min(0.95, 0.45 + j * 0.04);
+}
+// ドラ表示牌切りリーチの安全法則: 表示牌が2-4なら「1つ下」、5-7なら「2つ上」は安全度が上がる
+// （ドラそば＋表示牌を最後まで抱えてその順で切る手組みが存在しにくいため）
+function doraIndDiscMul(th, t){
+  if (t >= 27) return 1;
+  for (const ind of G.doraInd){
+    if (ind >= 27) continue;
+    if (!th.river.some((r, i) => r.t === ind && i >= 2)) continue; // 中盤以降に表示牌を切っている
+    if (Math.floor(t/9) !== Math.floor(ind/9)) continue;
+    const n = ind % 9 + 1, tn = t % 9 + 1;
+    if (n >= 2 && n <= 4 && tn === n - 1) return 0.7;
+    if (n >= 5 && n <= 7 && tn === n + 2) return 0.7;
+  }
+  return 1;
 }
 // 切り順読み: 「3→5の順で切られたら1が通りやすい」「7→5の順なら9が通りやすい」
 // 内側の牌を後から切っている＝その周辺ブロックを持っていなかった証拠
@@ -1152,6 +1172,10 @@ function strategicBonus(p, d, visible, threats){
     }
     if (cnt === 2 && isYH) b -= 130;                    // 役牌対子は鳴けば1翻、原則キープ
     if (cnt === 2 && !isYH && G.junme >= 5 && visible[d] - p.c[d] >= 1) b -= 45; // 1枚切れ字牌対子=雀頭兼安牌2枚
+    // 大三元阻止: 三元牌が鳴かれている場では「2枚持ちの三元牌から」処理（最後の1枚を止められる）
+    if (d >= 31 && G.players.some(q => q !== p && q.melds.some(m => m.type !== "chi" && m.t >= 31))){
+      if (cnt >= 2) b += 55; else b -= 25;
+    }
   }
   // 終盤、親に対して通る牌は安牌として1枚価値がある
   const dealerP = G.players[G.dealer];
@@ -1200,7 +1224,7 @@ function evaluatePlus(p){
     for (const th of threats){
       let rate = Math.min(40, dangerRate(r.d, th.safe, visible)
         * readDangerMul(reads.get(th), r.d, visible) * declMul(th, r.d) * doraSideMul(r.d)
-        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d));
+        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d) * doraIndDiscMul(th, r.d));
       // 後発のツモ切り追いかけリーチは本命薄（先制の現物を優先すれば8割通る定石）
       if (threats.length >= 2){
         const declEntry = th.river.find(rr => rr.riichi);
@@ -1689,7 +1713,13 @@ function giveFeedback(p, tile, riichiDecl){
       readNote += `⚠ <b>${q.name}の河が不自然</b>：中張牌ばかり切って字牌・1,9が出ていません→<b>国士無双疑い</b>。字牌と1,9は絞りましょう。`;
     } else if (rd.type === "toitoi"){
       readNote += `⚠ <b>${q.name}はポン2つ以上→対々和気配</b>。シャンポン・単騎に備え、生牌（特に字牌）の危険度を上げて評価中。`;
+    } else if (rd.type === "yaochu"){
+      readNote += `🚨 <b>${q.name}は么九牌のみの2副露→清老頭・字一色の可能性</b>。字牌と1,9は絶対に切らないでください（危険度3倍で評価中）。`;
     }
+  }
+  // 大三元阻止の切り順（三元牌が鳴かれている場で自分も三元牌を持っている時）
+  if (tile >= 31 && G.players.some(q => q !== p && q.melds.some(m => m.type !== "chi" && m.t >= 31))){
+    readNote += `⚠ <b>三元牌が鳴かれている場</b>：残りの三元牌は「自分が2枚持ちの種類から」切るのが定石（鳴かれても最後の1枚を止めて大三元を完全阻止できる）。単騎持ちから切ると止める手段を失います。`;
   }
   if (damas && damas.length){
     readNote += `⚠ <b>ダマテン警戒</b>：${damas.map(q=>q.name).join("・")}は${G.junme}巡目でも手出しが続いています（手が進んでいるサイン）。無筋を通す時は一呼吸。`;
