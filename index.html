@@ -1062,6 +1062,16 @@ function wallReadMuls(p, visible, reads){
   }
   return { mul, why };
 }
+// 鳴き読み: 副露者の直近の手出し牌の周辺(±2)は待ちになりにくい
+// （そこにターツがあるなら切らずに残しているはず＝「鳴く前の形に戻す」消去法の近似）
+function openSobaMul(q, t){
+  if (t >= 27 || !q.melds.length) return 1;
+  const recent = q.river.slice(-3).filter(r => !r.tsumogiri && r.t < 27);
+  for (const r of recent){
+    if (Math.floor(r.t/9) === Math.floor(t/9) && Math.abs(r.t - t) <= 2 && r.t !== t) return 0.8;
+  }
+  return 1;
+}
 // 副露者のテンパイ率推定（副露数×巡目。統計：2副露の終盤は7割方テンパイ）
 function openTenpaiProb(q){
   const m = q.melds.filter(x => x.type !== "ankan").length;
@@ -1166,6 +1176,8 @@ function strategicBonus(p, d, visible, threats){
     const cnt = p.c[d];
     if (cnt === 1){
       if (!isYH) b += G.junme <= 6 ? 60 : 10;          // 客風の孤立字牌は先に処理
+      // ただし既に誰かが切った字牌は「確定安牌」として温存し、生牌の字牌から切る
+      if (!isYH && visible[d] - p.c[d] >= 1 && G.junme <= 6) b -= 22;
       else if (d >= 31) b += G.junme <= 4 ? 15 : -15;  // 三元牌: 遅くなるほど残す/切りにくい
       else b -= 12;                                     // 自風・場風は守備も兼ねてやや残す
       if (G.junme >= 8 && !threats.length && visible[d] >= 3) b -= 55; // 終盤の安牌候補はキープ
@@ -1237,7 +1249,8 @@ function evaluatePlus(p){
     for (const q of softs){
       // 副露数×巡目からテンパイ率を推定して警戒度を動的に（2副露終盤≒リーチの7〜8割警戒）
       const w = Math.max(0.3, openTenpaiProb(q) * 0.9);
-      dngSoft = Math.max(dngSoft, Math.min(35, dangerRate(r.d, q.safe, visible) * readDangerMul(reads.get(q), r.d, visible)) * w);
+      dngSoft = Math.max(dngSoft, Math.min(35,
+        dangerRate(r.d, q.safe, visible) * readDangerMul(reads.get(q), r.d, visible) * openSobaMul(q, r.d)) * w);
     }
     for (const q of damas){
       dngSoft = Math.max(dngSoft, dangerRate(r.d, q.safe, visible) * 0.15); // ダマは軽めの警戒
@@ -1776,15 +1789,28 @@ function giveFeedback(p, tile, riichiDecl){
   };
   if (riichiDecl){
     const opts = rows.filter(r => r.shanten === 0);
-    const bestOpt = opts.reduce((a,b)=> b.count>a.count?b:a, opts[0]);
+    // 宣言牌選択の評価: 待ち枚数 + 筋掛け(外側理論)+1.5 + 端・字牌待ちの出やすさ+1（出和了り工学）
+    const optScore = o => {
+      p.c[o.d]--; const w = waitTiles(p.c, fixed); p.c[o.d]++;
+      let s = o.count;
+      if (o.d < 27 && w.some(x => x < 27 && Math.floor(x/9) === Math.floor(o.d/9) && Math.abs(x - o.d) === 3)) s += 1.5;
+      if (w.length && w.every(x => x >= 27 || x % 9 === 0 || x % 9 === 8)) s += 1;
+      return s;
+    };
+    const bestOpt = opts.reduce((a,b)=> optScore(b) > optScore(a) ? b : a, opts[0]);
     const shape = mine.count >= 6 ? "良形" : "愚形";
     const isFirst = threats.length === 0;
     const wrShow = Math.max(5, wr(mine) + (isFirst ? 0 : -8)); // 追いかけは和了率がやや下がる
-    grade = mine.count === bestOpt.count ? "best" : (mine.count >= bestOpt.count*0.7 ? "ok" : "sub");
+    const myScore = optScore(mine), bestScore = optScore(bestOpt);
+    grade = myScore >= bestScore - 0.01 ? "best" : (myScore >= bestScore * 0.7 ? "ok" : "sub");
     html = `<b>${isFirst ? "先制リーチ" : "追いかけリーチ"}！</b>打${jp} → <b>${shape}</b>・待ち${mine.kinds}種<b>${mine.count}枚</b>（${ukeList(mine)}）。` +
       `${G.junme}巡目、推定和了率<b>${wrShow}%</b>・一発裏込み打点期待約<b>${mine.val}点</b>。`;
     if (grade !== "best"){
-      html += `より広いのは打<b>${tileJp(bestOpt.d)}</b>の<b>${bestOpt.count}枚</b>待ち（${ukeList(bestOpt)}）でした。待ち枚数は和了率に直結します。`;
+      if (bestOpt.count > mine.count){
+        html += `より広いのは打<b>${tileJp(bestOpt.d)}</b>の<b>${bestOpt.count}枚</b>待ち（${ukeList(bestOpt)}）でした。待ち枚数は和了率に直結します。`;
+      } else {
+        html += `同じ枚数でも打<b>${tileJp(bestOpt.d)}</b>なら筋掛け・端寄りの<b>「出やすい待ち」</b>にできました（読まれにくく他家から出る出和了り工学）。`;
+      }
     } else if (isFirst){
       html += mine.count >= 6 ? `良形の先制リーチはデータ上もっとも局収支が高い選択。文句なし！` : `愚形ですが先制なら押し得です。`;
     } else {
