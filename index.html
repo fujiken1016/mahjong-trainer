@@ -1513,7 +1513,7 @@ function feedbackCall(q, chosenKey, options, tile){
   const chosen = options.find(o => o.key === chosenKey) || options[0];
   const best = options.reduce((a,b)=> b.ev > a.ev ? b : a);
   const diff = best.ev - chosen.ev;
-  const grade = diff <= 100 ? "best" : diff <= 700 ? "ok" : diff <= 1800 ? "sub" : "bad";
+  const grade = chosen.key === best.key ? "best" : diff <= 250 ? "ok" : diff <= 1000 ? "sub" : "bad";
   const shName = s => s <= -1 ? "和了" : s === 0 ? "聴牌" : `${s}向聴`;
   const desc = o => o.key === "pass"
     ? `スルー（${shName(o.sh)}のまま・${menzen(q)?"門前=立直込み":"現状"}打点期待${o.val}点）`
@@ -1868,7 +1868,10 @@ function giveFeedback(p, tile, riichiDecl){
     const isFirst = threats.length === 0;
     const wrShow = Math.max(5, wr(mine) + (isFirst ? 0 : -8)); // 追いかけは和了率がやや下がる
     const myScore = optScore(mine), bestScore = optScore(bestOpt);
-    grade = myScore >= bestScore - 0.01 ? "best" : (myScore >= bestScore * 0.7 ? "ok" : "sub");
+    // 厳格採点: 完全同値のみ◎
+    grade = myScore >= bestScore - 0.01 ? "best"
+      : myScore >= bestScore - 1.6 ? "ok"
+      : myScore >= bestScore * 0.7 ? "sub" : "bad";
     html = `<b>${isFirst ? "先制リーチ" : "追いかけリーチ"}！</b>打${jp} → <b>${shape}</b>・待ち${mine.kinds}種<b>${mine.count}枚</b>（${ukeList(mine)}）。` +
       `${G.junme}巡目、推定和了率<b>${wrShow}%</b>・一発裏込み打点期待約<b>${mine.val}点</b>。`;
     if (grade !== "best"){
@@ -1952,9 +1955,18 @@ function giveFeedback(p, tile, riichiDecl){
     }
     html += yamaNote(mine);
   } else if (stance === "fold"){
-    const safest = rows.reduce((a,b)=> b.dng < a.dng ? b : a);
+    // 厳格採点: 安全度1位（同率なら共通安牌温存順）の一打のみ◎
+    const breadth = t => G.players.filter(q => q !== p && q.safe.has(t)).length;
+    const safeOrder = [...rows].sort((a,b)=> a.dng - b.dng || breadth(a.d) - breadth(b.d));
+    const safest = safeOrder[0];
+    const foldRank = safeOrder.findIndex(r => r.d === tile) + 1;
     const diff = mine.dng - safest.dng;
-    grade = diff <= 0.2 ? "best" : diff <= 1.2 ? "ok" : diff <= 3.5 ? "sub" : "bad";
+    if (mine.d === safest.d) grade = "best";
+    else if (mine.dng <= 0.01) grade = "ok";
+    else if (diff <= 1.0) grade = "sub";
+    else grade = "bad";
+    const foldRankLine = `<b>【安全度: ${rows.length}種中${foldRank}位】</b>ランキング: ` +
+      safeOrder.slice(0,3).map((r,i)=>`${i+1}位 打${tileJp(r.d)}(${r.dng.toFixed(1)}%)`).join(" ／ ") + "。";
     const remaining = remainingSujiCount(threats[0].safe);
     const minShAll = Math.min(...rows.map(r=>r.shanten));
     const genbutsu = rows.filter(r=>r.dng===0).slice(0,4).map(r=>tileJp(r.d));
@@ -1964,11 +1976,13 @@ function giveFeedback(p, tile, riichiDecl){
     const nikenNote = threats.length >= 2
       ? `<b>2軒リーチ＝完全ベタオリ一択</b>（どちらにも通る牌を最優先）。${chaser?"後発のツモ切り追いかけは本命薄なので、<b>先制リーチの現物を最優先</b>すれば概ね安全です。":""}`
       : "";
-    html = `<b>${tNames}のリーチ</b>${dealerRiichi?"（<b>親リーチ</b>＝平均放銃は約7700点と高く、特に慎重に）":""}に対してあなたは${minShAll}向聴。${nikenNote}セオリーは<b>ベタオリ</b>です（統計上、1向聴以下から無筋を押すと局収支がマイナスになります）。` +
+    html = `${foldRankLine}<b>${tNames}のリーチ</b>${dealerRiichi?"（<b>親リーチ</b>＝平均放銃は約7700点と高く、特に慎重に）":""}に対してあなたは${minShAll}向聴。${nikenNote}セオリーは<b>ベタオリ</b>です（統計上、1向聴以下から無筋を押すと局収支がマイナスになります）。` +
       `打${jp}の推定放銃率は<b>${mine.dng.toFixed(1)}%（${dangerLabel(mine.dng)}）</b>、通っていない筋は残り${remaining}本。`;
     if (grade === "best"){
       html += `<b>最も安全な牌を選べています。</b>毎巡「現物→筋・字牌→ワンチャンス」の順で選び続けましょう`;
       if (tile === G.lastDiscTile) html += `。直前に通ったばかりの牌に合わせる<b>合わせ打ち</b>、お手本です`;
+    } else if (grade === "ok" && mine.dng <= 0.01){
+      html += `現物ではありますが切り順が最善ではありません。<b>「少ない相手にしか通らない現物から先に切り、全員共通の安牌を後に残す」</b>のが正しい温存順です。`;
     } else {
       const alts = [];
       if (genbutsu.length) alts.push(`現物の<b>${genbutsu.join("・")}</b>`);
@@ -1981,7 +1995,14 @@ function giveFeedback(p, tile, riichiDecl){
     }
   } else {
     const diff = best.ev - mine.ev;
-    grade = diff <= 100 ? "best" : diff <= 700 ? "ok" : diff <= 1800 ? "sub" : "bad";
+    // 厳格採点: ◎は全候補中1位の一打のみ。○は2位以内かつ僅差、△は上位半分、それ以外は✕
+    const rankIdx = rows.findIndex(r => r.d === tile) + 1;
+    if (mine.d === best.d) grade = "best";
+    else if (rankIdx <= 2 && diff <= 250) grade = "ok";
+    else if (rankIdx <= Math.ceil(rows.length / 2) && diff <= 1200) grade = "sub";
+    else grade = "bad";
+    const rankLine = `<b>【あなたの打牌: ${rows.length}種中${rankIdx}位】</b>ランキング: ` +
+      rows.slice(0, 3).map((r, i) => `${i+1}位 打${tileJp(r.d)}${i > 0 ? `(EV差-${Math.round(rows[0].ev - r.ev)})` : ""}`).join(" ／ ") + "。";
     let situ = "";
     if (threats.length){
       situ = stance === "push"
@@ -2017,7 +2038,7 @@ function giveFeedback(p, tile, riichiDecl){
     }
     if (grade === "best"){
       const second = rows[1];
-      html = `${situ}打${jp} が<b>総合EV最大</b>です。受け入れ${mine.kinds}種<b>${mine.count}枚</b>（${ukeList(mine)}）・和了率<b>${wr(mine)}%</b>・打点期待約<b>${mine.val}点</b>` +
+      html = `${rankLine}${situ}打${jp} が<b>総合EV最大</b>です。受け入れ${mine.kinds}種<b>${mine.count}枚</b>（${ukeList(mine)}）・和了率<b>${wr(mine)}%</b>・打点期待約<b>${mine.val}点</b>` +
         `${threats.length?`・放銃率${mine.dng.toFixed(1)}%（${dangerLabel(mine.dng)}）`:""}。` +
         `${mine.shanten===0?`<b>聴牌です！</b>`:""}` +
         `${mine.shanten===1 && rows.some(x=>x.shanten===0) ? `👏 正しい<b>テンパイ外し</b>：安易な即テンパイを取らず、価値の高い1向聴を選べています。` : ""}${shapeNote}` +
@@ -2036,8 +2057,8 @@ function giveFeedback(p, tile, riichiDecl){
       }
       if (best.val - mine.val >= 1000) ps.push(`打点期待も約${mine.val}点→約${best.val}点と差があります`);
       if (threats.length && mine.dng - best.dng >= 1.5) ps.push(`放銃率でも不利です（${mine.dng.toFixed(1)}% vs ${best.dng.toFixed(1)}%）`);
-      if (!ps.length) ps.push("僅差の選択で、これも十分あり得る一打です");
-      html = `${situ}打${jp}は受け${mine.kinds}種${mine.count}枚・和了率${wr(mine)}%<span class="evchip">EV差 -${Math.round(diff)}</span>。` +
+      if (!ps.length) ps.push("僅差ですが最善ではありません");
+      html = `${rankLine}${situ}打${jp}は受け${mine.kinds}種${mine.count}枚・和了率${wr(mine)}%<span class="evchip">EV差 -${Math.round(diff)}</span>。` +
         `最善は打<b>${tileJp(best.d)}</b>：受け${best.kinds}種<b>${best.count}枚</b>（${ukeList(best)}）・和了率${wr(best)}%。` +
         `${ps.join("。")}。${shapeNote}${yamaNote(best)}${stratNote}`;
     }
