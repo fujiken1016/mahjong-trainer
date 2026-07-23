@@ -1151,6 +1151,7 @@ function strategicBonus(p, d, visible, threats){
       if (G.junme >= 8 && !threats.length && visible[d] >= 3) b -= 55; // 終盤の安牌候補はキープ
     }
     if (cnt === 2 && isYH) b -= 130;                    // 役牌対子は鳴けば1翻、原則キープ
+    if (cnt === 2 && !isYH && G.junme >= 5 && visible[d] - p.c[d] >= 1) b -= 45; // 1枚切れ字牌対子=雀頭兼安牌2枚
   }
   // 終盤、親に対して通る牌は安牌として1枚価値がある
   const dealerP = G.players[G.dealer];
@@ -1197,9 +1198,14 @@ function evaluatePlus(p){
     // 放銃コスト: 親リーチ増し + 河読み + 宣言牌読み + ドラそば + 序盤外側補正
     let cost = 0, dng = 0;
     for (const th of threats){
-      const rate = Math.min(40, dangerRate(r.d, th.safe, visible)
+      let rate = Math.min(40, dangerRate(r.d, th.safe, visible)
         * readDangerMul(reads.get(th), r.d, visible) * declMul(th, r.d) * doraSideMul(r.d)
         * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d));
+      // 後発のツモ切り追いかけリーチは本命薄（先制の現物を優先すれば8割通る定石）
+      if (threats.length >= 2){
+        const declEntry = th.river.find(rr => rr.riichi);
+        if (declEntry && declEntry.tsumogiri) rate *= 0.65;
+      }
       dng = Math.max(dng, rate);
       cost = Math.max(cost, (rate/100) * (isDealer(th) ? 9600 : 7500));
     }
@@ -1754,6 +1760,43 @@ function giveFeedback(p, tile, riichiDecl){
     } else {
       html += mine.count >= 6 ? `<b>良形の追いかけ</b>は五分以上の勝負でOK。` : `<b>愚形の追いかけ</b>はやや不利な勝負。打点や巡目次第では降りも選択肢でした。`;
     }
+    // 追いかけリーチの枚数基準（3枚以下禁止・5枚以上OK・4枚は状況）
+    if (!isFirst){
+      if (mine.count <= 3){
+        grade = "bad";
+        html += `❌ <b>待ち残り${mine.count}枚の追いかけリーチは禁止レベル</b>（基準: 3枚以下は見送り・5枚以上で勝負・4枚は状況次第）。`;
+      } else if (mine.count === 4 && grade === "best"){
+        grade = "ok";
+        html += `残り4枚の追いかけは境界線。跳満級の打点があれば正当化できます。`;
+      } else if (mine.count >= 5){
+        html += `残り${mine.count}枚は追いかけ基準（5枚以上）を満たしています。`;
+      }
+    }
+    // 先制でも2巡目の愚形リーチは待つのが定石
+    if (isFirst && G.junme <= 2 && mine.count <= 4){
+      if (grade === "best") grade = "ok";
+      html += `⚠ <b>2巡目の愚形リーチ</b>は全員が安牌ゼロで全ツッパされやすく損。1〜2巡待ってからのリーチ（または崩し）が定石です。`;
+    }
+    // 宣言牌の筋掛け待ち（外側理論）
+    p.c[tile]--;
+    const wNow = waitTiles(p.c, fixed);
+    p.c[tile]++;
+    if (tile < 27 && wNow.some(x => x < 27 && Math.floor(x/9) === Math.floor(tile/9) && Math.abs(x - tile) === 3)){
+      html += `👍 <b>宣言牌の筋にかかる待ち（外側理論）</b>：宣言牌が通った安心感で待ち牌が出やすい形です。`;
+    }
+    // リーチ者の現物待ち → ダマ推奨
+    if (threats.length && wNow.length && threats.some(th => wNow.every(x => th.safe.has(x)))){
+      let damaYaku = false;
+      p.c[tile]--; p.c[wNow[0]]++;
+      damaYaku = !!tryWinResult(p, wNow[0], false);
+      p.c[wNow[0]]--; p.c[tile]++;
+      if (damaYaku){
+        if (grade === "best" || grade === "ok") grade = "sub";
+        html += `⚠ <b>待ちがリーチ者の現物です。役があるのでダマが正解</b>：他家は現物を切ってくるので出和了率が跳ね上がり、安くてもリーチ者の和了を阻止できます。`;
+      } else {
+        html += `待ちがリーチ者の現物で出やすい狙い目です（役がないためリーチ自体は必要）。`;
+      }
+    }
     if (mine.count === 0){
       grade = "bad";
       html += `❌ <b>待ちがすべて場に見えているカラテン</b>です！和了は不可能なのでリーチすべきではありませんでした。`;
@@ -1781,7 +1824,10 @@ function giveFeedback(p, tile, riichiDecl){
     const genbutsu = rows.filter(r=>r.dng===0).slice(0,4).map(r=>tileJp(r.d));
     const semiSafe = rows.filter(r=>r.dng>0 && r.dng<1.5).slice(0,3).map(r=>`${tileJp(r.d)}(${r.dng.toFixed(1)}%)`);
     const dealerRiichi = threats.some(th => isDealer(th));
-    const nikenNote = threats.length >= 2 ? "<b>2軒リーチ＝完全ベタオリ一択</b>（どちらにも通る牌を最優先）。" : "";
+    const chaser = threats.length >= 2 && threats.some(th => { const d = th.river.find(rr=>rr.riichi); return d && d.tsumogiri; });
+    const nikenNote = threats.length >= 2
+      ? `<b>2軒リーチ＝完全ベタオリ一択</b>（どちらにも通る牌を最優先）。${chaser?"後発のツモ切り追いかけは本命薄なので、<b>先制リーチの現物を最優先</b>すれば概ね安全です。":""}`
+      : "";
     html = `<b>${tNames}のリーチ</b>${dealerRiichi?"（<b>親リーチ</b>＝平均放銃は約7700点と高く、特に慎重に）":""}に対してあなたは${minShAll}向聴。${nikenNote}セオリーは<b>ベタオリ</b>です（統計上、1向聴以下から無筋を押すと局収支がマイナスになります）。` +
       `打${jp}の推定放銃率は<b>${mine.dng.toFixed(1)}%（${dangerLabel(mine.dng)}）</b>、通っていない筋は残り${remaining}本。`;
     if (grade === "best"){
@@ -1940,7 +1986,9 @@ function aiDecide(p){
   }
   let riichi = (stance === "attack" || stance === "push") && menzen(p) &&
     pick.shanten === 0 && pick.count >= 2 && p.score >= 1000 && G.wall.length >= 4 &&
-    !(AL && rank === 1 && pick.val < 5200); // トップ目オーラスの安手はダマで逃げ切り
+    !(AL && rank === 1 && pick.val < 5200) &&      // トップ目オーラスの安手はダマで逃げ切り
+    !(threats.length && pick.count <= 3) &&        // 残り3枚以下の追いかけリーチ禁止
+    !(G.junme <= 2 && pick.count <= 4);            // 2巡目の愚形リーチは1-2巡待つ（次巡以降に自動再判定）
   if (riichi){ // フリテンリーチはしない
     p.c[pick.d]--;
     const w = waitTiles(p.c, fixedOf(p));
