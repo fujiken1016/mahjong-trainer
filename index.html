@@ -815,9 +815,9 @@ function winProbEst(sh, ukeCount, junme, waitsLeft){
   if (sh <= 0){
     let base = 0.53 + 0.04 * (9 - junme);
     const w = waitsLeft != null ? waitsLeft : ukeCount;
-    if (w <= 1) base -= 0.24;        // 枯れかけ待ち
-    else if (w <= 2) base -= 0.16;   // 残り2枚の愚形
-    else if (w <= 4) base -= 0.09;   // 愚形
+    if (w <= 1) base -= 0.26;        // 枯れかけ待ち
+    else if (w <= 2) base -= 0.20;   // 残り2枚の愚形
+    else if (w <= 4) base -= 0.15;   // 愚形（データ: 5巡目 両面68% vs 愚形53%）
     else if (w >= 8) base += 0.03;   // 広い良形
     return Math.min(0.92, Math.max(0.04, base));
   }
@@ -1076,10 +1076,19 @@ function openSobaMul(q, t){
 function openTenpaiProb(q){
   const m = q.melds.filter(x => x.type !== "ankan").length;
   if (m === 0) return 0;
-  const j = G.junme;
-  if (m === 1) return Math.min(0.6, 0.05 + j * 0.03);
-  if (m === 2) return Math.min(0.85, 0.25 + j * 0.04);
-  return Math.min(0.95, 0.45 + j * 0.04);
+  // 平澤式: 捨て牌の段数 + 副露数 = 4 で約50%（例: 2段目2副露、1段目3副露）
+  const score = G.junme / 6 + m;
+  return Math.max(0.05, Math.min(0.95, 0.5 + (score - 4) * 0.25));
+}
+// シャンポン否定: 自分から見えている同種牌が多いほどシャンポンに当たらない
+// （3枚見え=単騎のみ。当たりパターン数は見え枚数の積で減る）
+function pairSeenMul(t, visible){
+  if (t >= 27) return 1; // 字牌はdangerRateが枚数対応済み
+  const seen = visible[t]; // 自手＋河＋副露＋ドラ表示
+  if (seen >= 4) return 0.5;
+  if (seen === 3) return 0.78;
+  if (seen === 2) return 0.9;
+  return 1;
 }
 /* 壁・ノーチャンス過信の罠:
    ①壁の外側の牌が宣言牌なら、そのさらに外側はシャンポンで超危険
@@ -1258,7 +1267,8 @@ function evaluatePlus(p){
     for (const th of threats){
       let rate = Math.min(40, dangerRate(r.d, th.safe, visible)
         * readDangerMul(reads.get(th), r.d, visible) * declMul(th, r.d) * doraSideMul(r.d)
-        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d) * doraIndDiscMul(th, r.d) * trapMul(th, r.d, visible));
+        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d) * doraIndDiscMul(th, r.d)
+        * trapMul(th, r.d, visible) * pairSeenMul(r.d, visible));
       // 後発のツモ切り追いかけリーチは本命薄（先制の現物を優先すれば8割通る定石）
       if (threats.length >= 2){
         const declEntry = th.river.find(rr => rr.riichi);
@@ -1306,7 +1316,8 @@ function decideStance(rows, threats, ctx){
     if (atk.count >= 5 || atk.val >= 3900 || G.junme <= 10) return "push";
     return "cautious";
   }
-  if (minSh === 1 && atk.val >= 5200 && atk.count >= 16) return "cautious";
+  // 1向聴押しの3条件（平澤基準）: 打点3900以上 × 両面×両面級の広さ × 9巡目以内
+  if (minSh === 1 && atk.val >= 3900 && atk.count >= 16 && G.junme <= 9) return "cautious";
   return "fold";
 }
 
@@ -1413,7 +1424,11 @@ function aiWantsPon(q, tile){
   if (after >= before) return false;
   const isYakuhai = tile >= 31 || tile === seatWind(q) || tile === G.roundWind;
   if (isYakuhai) return true;
-  return openYakuOk(q, tile) && (after <= 1 || doraish(q) >= 2);
+  // 鳴き基準（平澤/ヨーテル）: ①ポンテン(テンパイ取り・中盤以降は特に) ②ドラ2以上=鳴いて3翻級 ③手が大きく進む
+  if (!openYakuOk(q, tile)) return false;
+  if (after === 0) return true;                       // ポンテンは取る
+  if (doraish(q) >= 2) return true;                   // ドラ2以上は遠くから仕掛けてよい
+  return after <= 1 && doraish(q) >= 1;               // ドラ1は1向聴になるなら
 }
 function aiWantsChi(q, tile, combos){
   const fixed = fixedOf(q);
@@ -1428,8 +1443,9 @@ function aiWantsChi(q, tile, combos){
   }
   if (!best) return null;
   if (!openYakuOk(q, tile)) return null;
-  if (best.after <= 1 || doraish(q) >= 2) return best.combo;
-  return null;
+  if (best.after === 0) return best.combo;            // チーテンは取る
+  if (doraish(q) >= 2) return best.combo;             // ドラ2以上は積極的に
+  return best.after <= 1 && doraish(q) >= 1 ? best.combo : null;
 }
 /* 鳴き判断の評価: スルー/ポン/各チーのEVを比較 */
 function evaluateCallOptions(q, tile, red, combos, canPon, canKan){
@@ -1458,6 +1474,7 @@ function evaluateCallOptions(q, tile, red, combos, canPon, canKan){
     const yakuOk = openYakuOk(q, tile);
     const value = yakuOk ? est.value : Math.round(est.value * 0.15); // 役の当てがない鳴きは大減点
     let evScore = best ? winProbEst(best.shanten, best.count, G.junme) * value : 0;
+    if (best && best.shanten === 0 && G.junme >= 8 && yakuOk) evScore += 600; // 中盤以降のポンテン・チーテンは速度+テンパイ料価値
     if (threats.length) evScore -= 1200; // リーチ相手に手を開くリスク
     return { key, label, combo, ev: Math.round(evScore), sh: best?best.shanten:9, uke: best?best.count:0, val: value, yakuOk };
   };
@@ -1780,7 +1797,11 @@ function giveFeedback(p, tile, riichiDecl){
       const needed = diff <= 1500 ? 1300 : diff <= 4000 ? 3900 : diff <= 8100 ? 8000 : diff <= 12100 ? 12000 : 16000;
       const bestVal = best ? best.val : 0;
       if (bestVal >= needed) scoreNote += `この手の打点期待（約${bestVal}点）は<b>逆転条件（約${needed}点）に届いています</b>。まっすぐ勝負！`;
-      else scoreNote += `逆転には約<b>${needed}点</b>必要ですが現在の打点期待は約${bestVal}点。<b>ドラ・赤を切らず</b>、リーチ＋一発裏や手役で打点を作る手組みを意識しましょう。`;
+      else {
+        scoreNote += `逆転には約<b>${needed}点</b>必要ですが現在の打点期待は約${bestVal}点。<b>ドラ・赤を切らず</b>、リーチ＋一発裏や手役で打点を作る手組みを意識しましょう。`;
+        if (needed === 8000) scoreNote += `目安：1翻役＋リーチ×ツモ×裏1でも満貫に届きます。`;
+        else if (needed >= 12000) scoreNote += `目安：チートイなら裏2枚（約20%）で跳満、リーチツモピンフドラ3でも跳満です。`;
+      }
     }
   }
   const wr = r => Math.round(r.winP*100);
@@ -1848,6 +1869,15 @@ function giveFeedback(p, tile, riichiDecl){
         html += `残り4枚の追いかけは境界線。跳満級の打点があれば正当化できます。`;
       } else if (mine.count >= 5){
         html += `残り${mine.count}枚は追いかけ基準（5枚以上）を満たしています。`;
+      }
+    }
+    // 52理論: 面前5200点が リーチ/ダマ の分水嶺
+    if (isFirst){
+      if (mine.val < 5200 && grade === "best"){
+        html += `5200点未満の手はダマの価値がほぼなく<b>リーチ一択</b>です（52理論：リーチは打点約2倍）。`;
+      } else if (mine.val >= 5200 && mine.count <= 4 && G.junme >= 8){
+        if (grade === "best") grade = "ok";
+        html += `⚠ <b>52理論</b>：面前5200点以上の愚形テンパイは<b>ダマも有利</b>。出和了率を上げつつ手変わりを待つ選択がありました。`;
       }
     }
     // 先制でも2巡目の愚形リーチは待つのが定石
@@ -2066,7 +2096,8 @@ function aiDecide(p){
     pick.shanten === 0 && pick.count >= 2 && p.score >= 1000 && G.wall.length >= 4 &&
     !(AL && rank === 1 && pick.val < 5200) &&      // トップ目オーラスの安手はダマで逃げ切り
     !(threats.length && pick.count <= 3) &&        // 残り3枚以下の追いかけリーチ禁止
-    !(G.junme <= 2 && pick.count <= 4);            // 2巡目の愚形リーチは1-2巡待つ（次巡以降に自動再判定）
+    !(G.junme <= 2 && pick.count <= 4) &&          // 2巡目の愚形リーチは1-2巡待つ（次巡以降に自動再判定）
+    !(pick.val >= 5200 && pick.count <= 4 && G.junme >= 8); // 52理論: 5200以上の愚形は中盤以降ダマ有利
   if (riichi){ // フリテンリーチはしない
     p.c[pick.d]--;
     const w = waitTiles(p.c, fixedOf(p));
