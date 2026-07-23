@@ -1081,6 +1081,28 @@ function openTenpaiProb(q){
   if (m === 2) return Math.min(0.85, 0.25 + j * 0.04);
   return Math.min(0.95, 0.45 + j * 0.04);
 }
+/* 壁・ノーチャンス過信の罠:
+   ①壁の外側の牌が宣言牌なら、そのさらに外側はシャンポンで超危険
+     （例: 7が4枚見え(自分の暗刻含む)で8切りリーチ→9、9切り→8。3壁で1切り→2、2切り→1）
+   ②4-5-6が切られた後の1/9宣言リーチ→隣の2/8はシャンポン超危険 */
+function trapMul(th, t, visible){
+  if (t >= 27) return 1;
+  const decl = th.river.find(r => r.riichi);
+  if (!decl || decl.t >= 27 || Math.floor(decl.t/9) !== Math.floor(t/9)) return 1;
+  const suit = Math.floor(t/9)*9, n = t % 9, dn = decl.t % 9;
+  const wallHeavy = k => k >= 0 && k <= 8 && visible[suit+k] >= 3;
+  // ① 壁の外側ペア（宣言牌と検討牌が隣同士で、その内側に壁）
+  if (Math.abs(n - dn) === 1){
+    const lo = Math.min(n, dn), hi = Math.max(n, dn);
+    if ((hi <= 7 && wallHeavy(hi+1)) || (lo >= 1 && wallHeavy(lo-1))) return 4; // 壁割引を打ち消して危険側へ
+  }
+  // ② 4-5-6切り後の端牌宣言リーチ → 隣の2/8
+  if ((dn === 0 && n === 1) || (dn === 8 && n === 7)){
+    const preRiichi = th.river.slice(0, th.river.findIndex(r=>r.riichi));
+    if (preRiichi.some(r => r.t < 27 && Math.floor(r.t/9)*9 === suit && r.t%9 >= 3 && r.t%9 <= 5)) return 1.6;
+  }
+  return 1;
+}
 // ドラ表示牌切りリーチの安全法則: 表示牌が2-4なら「1つ下」、5-7なら「2つ上」は安全度が上がる
 // （ドラそば＋表示牌を最後まで抱えてその順で切る手組みが存在しにくいため）
 function doraIndDiscMul(th, t){
@@ -1236,7 +1258,7 @@ function evaluatePlus(p){
     for (const th of threats){
       let rate = Math.min(40, dangerRate(r.d, th.safe, visible)
         * readDangerMul(reads.get(th), r.d, visible) * declMul(th, r.d) * doraSideMul(r.d)
-        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d) * doraIndDiscMul(th, r.d));
+        * earlyOutsideMul(th, r.d) * orderReadMul(th, r.d) * doraIndDiscMul(th, r.d) * trapMul(th, r.d, visible));
       // 後発のツモ切り追いかけリーチは本命薄（先制の現物を優先すれば8割通る定石）
       if (threats.length >= 2){
         const declEntry = th.river.find(rr => rr.riichi);
