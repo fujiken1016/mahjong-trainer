@@ -1072,6 +1072,14 @@ function openSobaMul(q, t){
   }
   return 1;
 }
+// 副露者の最終手出しの筋はカンチャンに刺さりやすい（ヨーテル/ドラポン降り）
+function openLastSujiMul(q, t){
+  if (t >= 27) return 1;
+  const tedashi = [...q.river].reverse().find(r => !r.tsumogiri && r.t < 27 && !r.called);
+  if (!tedashi) return 1;
+  if (Math.floor(tedashi.t/9) === Math.floor(t/9) && Math.abs(tedashi.t - t) === 3) return 1.35;
+  return 1;
+}
 // 副露者のテンパイ率推定（副露数×巡目。統計：2副露の終盤は7割方テンパイ）
 function openTenpaiProb(q){
   const m = q.melds.filter(x => x.type !== "ankan").length;
@@ -1250,6 +1258,16 @@ function evaluatePlus(p){
   let riskMul = 1;
   if (AL){ if (rank === 1) riskMul = 1.5; else if (rank === 2) riskMul = 1.15; else if (rank === 4) riskMul = 0.7; }
   else if (rank === 1 && G.junme >= 10) riskMul = 1.15;
+  // 東風戦の点差理論（ヨーテル）: 下位と4100点差以上→流局逃げ切りで守り、4000点差以下→罰符でまくられるため押し寄り
+  if (AL && rank <= 3){
+    const sorted = G.players.slice().sort((a,b)=> b.score - a.score || a.idx - b.idx);
+    const below = sorted[rank]; // 1つ下の順位
+    if (below){
+      const diff = p.score - below.score;
+      if (diff >= 4100) riskMul *= 1.2;
+      else if (diff > 0 && diff <= 4000) riskMul *= 0.88;
+    }
+  }
   // 山読み: 受け入れ牌が実際に山に残っている度合いの補正
   const wallInfo = wallReadMuls(p, visible, reads);
   const out = rows.map(r => {
@@ -1282,7 +1300,8 @@ function evaluatePlus(p){
       // 副露数×巡目からテンパイ率を推定して警戒度を動的に（2副露終盤≒リーチの7〜8割警戒）
       const w = Math.max(0.3, openTenpaiProb(q) * 0.9);
       dngSoft = Math.max(dngSoft, Math.min(35,
-        dangerRate(r.d, q.safe, visible) * readDangerMul(reads.get(q), r.d, visible) * openSobaMul(q, r.d)) * w);
+        dangerRate(r.d, q.safe, visible) * readDangerMul(reads.get(q), r.d, visible)
+        * openSobaMul(q, r.d) * openLastSujiMul(q, r.d)) * w);
     }
     for (const q of damas){
       dngSoft = Math.max(dngSoft, dangerRate(r.d, q.safe, visible) * 0.15); // ダマは軽めの警戒
@@ -1291,6 +1310,7 @@ function evaluatePlus(p){
     cost += (dngSoft/100) * 6000;
     let ev = winP * val - cost * riskMul + strategicBonus(p, r.d, visible, threats);
     if (G.wall.length <= 8 && r.shanten === 0) ev += 900; // 終盤の形式テンパイ価値（ノーテン罰符±）
+    if (G.junme >= 9 && r.shanten === 0) ev += 350;       // 9巡目以降はシャンテン戻し封印・素直にテンパイ（ヨーテル）
     return { ...r, val, winP, adj: adjCount, dng, dngSoft, ev };
   });
   out.sort((a,b) => b.ev - a.ev || a.shanten - b.shanten || b.count - a.count);
@@ -1423,7 +1443,10 @@ function aiWantsPon(q, tile){
   const after = ev[0] ? ev[0].shanten : 9;
   if (after >= before) return false;
   const isYakuhai = tile >= 31 || tile === seatWind(q) || tile === G.roundWind;
-  if (isYakuhai) return true;
+  if (isYakuhai){
+    // 役牌は1枚目スルー・2枚目ポンが基本。ドラ1以上かポンテンなら1枚目から（平澤）
+    return after === 0 || doraish(q) >= 1 || G.riverCounts[tile] >= 2;
+  }
   // 鳴き基準（平澤/ヨーテル）: ①ポンテン(テンパイ取り・中盤以降は特に) ②ドラ2以上=鳴いて3翻級 ③手が大きく進む
   if (!openYakuOk(q, tile)) return false;
   if (after === 0) return true;                       // ポンテンは取る
@@ -1880,6 +1903,11 @@ function giveFeedback(p, tile, riichiDecl){
         html += `⚠ <b>52理論</b>：面前5200点以上の愚形テンパイは<b>ダマも有利</b>。出和了率を上げつつ手変わりを待つ選択がありました。`;
       }
     }
+    // 3段目（13巡目〜）の愚形リーチはダマが定石
+    if (isFirst && G.junme >= 13 && mine.count <= 4){
+      if (grade === "best") grade = "ok";
+      html += `⚠ <b>3段目の愚形リーチはダマが定石</b>：出和了り期待が薄いのに全員を最大警戒させ、自分は降りられなくなります。`;
+    }
     // 先制でも2巡目の愚形リーチは待つのが定石
     if (isFirst && G.junme <= 2 && mine.count <= 4){
       if (grade === "best") grade = "ok";
@@ -2084,7 +2112,10 @@ function aiDecide(p){
   const stance = decideStance(rows, threats, { AL, rank });
   let pick;
   if (stance === "fold"){
-    pick = rows.reduce((a,b)=> (b.dng < a.dng || (b.dng === a.dng && b.ev > a.ev)) ? b : a);
+    // ベタオリの切り順: 危険度最小を優先し、同率なら「少ない相手にしか通らない牌」から切って共通安牌を温存（ヨーテル）
+    const breadth = t => G.players.filter(q => q !== p && q.safe.has(t)).length;
+    pick = rows.reduce((a,b)=>
+      (b.dng < a.dng - 0.01 || (Math.abs(b.dng - a.dng) <= 0.01 && breadth(b.d) < breadth(a.d))) ? b : a);
   } else if (stance === "cautious"){
     const minSh = Math.min(...rows.map(r=>r.shanten));
     pick = rows.filter(r=>r.shanten===minSh).sort((a,b)=> a.dng - b.dng || b.ev - a.ev)[0];
@@ -2097,7 +2128,8 @@ function aiDecide(p){
     !(AL && rank === 1 && pick.val < 5200) &&      // トップ目オーラスの安手はダマで逃げ切り
     !(threats.length && pick.count <= 3) &&        // 残り3枚以下の追いかけリーチ禁止
     !(G.junme <= 2 && pick.count <= 4) &&          // 2巡目の愚形リーチは1-2巡待つ（次巡以降に自動再判定）
-    !(pick.val >= 5200 && pick.count <= 4 && G.junme >= 8); // 52理論: 5200以上の愚形は中盤以降ダマ有利
+    !(pick.val >= 5200 && pick.count <= 4 && G.junme >= 8) && // 52理論: 5200以上の愚形は中盤以降ダマ有利
+    !(G.junme >= 13 && pick.count <= 4);                      // 3段目の愚形リーチはダマ（ヨーテル）
   if (riichi){ // フリテンリーチはしない
     p.c[pick.d]--;
     const w = waitTiles(p.c, fixedOf(p));
