@@ -209,6 +209,62 @@
   .rev-count{font-size:12px;color:var(--sub)}
   .mistakes{font-size:12px;line-height:1.8;color:#c6d2f0;margin-top:8px;max-height:200px;overflow-y:auto}
   footer{margin-top:12px;font-size:11px;color:#5f6a92;line-height:1.7}
+
+  /* ===== スマホ最適化 ===== */
+  body{touch-action:manipulation;-webkit-text-size-adjust:100%}
+  @media (hover: none){
+    .tile:hover{transform:none;box-shadow:0 4px 0 var(--tside),0 6px 12px rgba(0,0,0,.45)}
+    .primary:hover,.ghost:hover,#riichi-btn:hover{transform:none}
+  }
+  @media (max-width: 700px){
+    .wrap{padding:4px}
+    #game{padding:4px;gap:4px}
+    .roundbar{font-size:10.5px;padding:3px 8px;gap:7px;border-radius:10px}
+    #rb-rules{display:none}
+    .fb{left:4px;right:4px;width:auto;bottom:4px;max-height:84px;padding:5px 8px;gap:4px}
+    .fb .body{font-size:10.5px;line-height:1.5}
+    .fb .mark{font-size:14px}
+    .pchip{padding:3px 7px;gap:5px;border-radius:9px}
+    .avatar{width:26px;height:26px;font-size:12px}
+    .pc-name{font-size:9.5px}
+    .pc-score{font-size:11px}
+    .riichi-flag{font-size:8.5px;padding:1px 4px}
+    .userzone{padding:5px 6px calc(5px + env(safe-area-inset-bottom))}
+    .user-head{font-size:10.5px;gap:6px}
+    .user-head .avatar{width:24px;height:24px;font-size:11px}
+    .hand{gap:1px;margin-top:3px}
+    .hand .tsumo{margin-left:2%}
+    .tile{border-radius:4px;min-width:22px}
+    .user-melds .mini{width:24px;height:32px}
+    .controls{margin-top:3px;gap:6px}
+    .controls button,#riichi-btn,#kan-btn{padding:9px 14px;font-size:13px;border-radius:9px}
+    #undo-btn{padding:9px 10px;font-size:11px}
+    .status-note{font-size:10.5px}
+    .grade-toast{bottom:40%;padding:9px 16px;border-radius:14px}
+    .grade-toast .tmark{font-size:32px}
+    .grade-toast .tlabel{font-size:13.5px}
+    .grade-toast .tsub{font-size:10px}
+    .cutin-text{font-size:38px;letter-spacing:.12em}
+    .cutin-band{height:80px}
+    .modal{padding:14px;border-radius:14px}
+    .modal h2{font-size:14.5px}
+    .yaku-list{font-size:12px}
+    .rev-table{font-size:10.5px}
+    #start{padding:18px;margin:12px auto}
+    .logo{font-size:26px}
+    .mode-btn{padding:10px 14px;font-size:13px}
+    .seg button{padding:4px 8px;font-size:11px}
+    .rule-row .lbl{font-size:11.5px}
+  }
+  @media (max-height: 470px){ /* スマホ横持ち */
+    .roundbar .item{display:none}
+    .fb{max-height:56px}
+    #game{gap:2px;padding:2px}
+  }
+  @media (max-width: 700px) and (orientation: portrait){
+    #table{top:40%}          /* 卓を上寄せして下の余白をログに使う */
+    .fb{max-height:170px}    /* 縦画面はフィードバックログを広く */
+  }
 </style>
 
 <div class="wrap">
@@ -1998,8 +2054,8 @@ function giveFeedback(p, tile, riichiDecl){
     // 厳格採点: ◎は全候補中1位の一打のみ。○は2位以内かつ僅差、△は上位半分、それ以外は✕
     const rankIdx = rows.findIndex(r => r.d === tile) + 1;
     if (mine.d === best.d) grade = "best";
-    else if (rankIdx <= 2 && diff <= 250) grade = "ok";
-    else if (rankIdx <= Math.ceil(rows.length / 2) && diff <= 1200) grade = "sub";
+    else if (rankIdx <= 3 && diff <= 250) grade = "ok";
+    else if (diff <= 800) grade = "sub";
     else grade = "bad";
     const rankLine = `<b>【あなたの打牌: ${rows.length}種中${rankIdx}位】</b>ランキング: ` +
       rows.slice(0, 3).map((r, i) => `${i+1}位 打${tileJp(r.d)}${i > 0 ? `(EV差-${Math.round(rows[0].ev - r.ev)})` : ""}`).join(" ／ ") + "。";
